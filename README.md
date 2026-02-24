@@ -84,6 +84,7 @@ npx ts-prefix-internals -p tsconfig.json -e src/index.ts -e src/server.ts -o .pr
     --dry-run             Report what would be renamed without writing files
     --verbose             Print every rename decision with reasoning
     --skip-validation     Skip post-rename type-check
+    --force               Continue despite dynamic-access errors (exit 0)
 -h, --help                Show help
 ```
 
@@ -220,7 +221,10 @@ One-time setup:
 - Validates output compiles after renaming
 - Never modifies symbols from `node_modules` or `.d.ts` files
 - Skips decorated symbols (decorator name reflection would break)
-- Warns on dynamic property access patterns
+- Detects dynamic property access with three-tier diagnostics:
+  - **Error**: bracket access with a string literal type that matches a prefixed property (provably broken)
+  - **Warn**: bracket access with a broad `string` or `any` type (may break)
+  - **Silent**: array/tuple indexing (safe, suppressed)
 - Skips symbols already starting with `_`
 
 ## Requirements
