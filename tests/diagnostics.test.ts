@@ -1,0 +1,58 @@
+import { describe, it, expect, beforeAll } from 'vitest';
+import path from 'node:path';
+import { createProgramFromConfig } from '../src/program.js';
+import { discoverPublicApiSurface } from '../src/api-surface.js';
+import { classifySymbols } from '../src/classifier.js';
+import type { Diagnostic } from '../src/config.js';
+
+const TEST_PROJECT = path.resolve(import.meta.dirname, '../test-project/tsconfig.json');
+const TEST_ENTRY = path.resolve(import.meta.dirname, '../test-project/src/index.ts');
+
+describe('dynamic access diagnostics', () => {
+  let allDiagnostics: Diagnostic[];
+
+  beforeAll(() => {
+    const program = createProgramFromConfig(TEST_PROJECT);
+    const checker = program.getTypeChecker();
+    const publicSymbols = discoverPublicApiSurface(program, checker, [TEST_ENTRY]);
+    const result = classifySymbols(program, checker, publicSymbols, [TEST_ENTRY], '_');
+    allDiagnostics = result.diagnostics;
+  });
+
+  function diagnosticsForFile(fileName: string): Diagnostic[] {
+    return allDiagnostics.filter(d => d.file.endsWith(fileName));
+  }
+
+  describe('silent tier — array/tuple access', () => {
+    it('does NOT emit diagnostics for array index access', () => {
+      const diags = diagnosticsForFile('dynamic-access.ts');
+      // Only the warn (obj[key]) and error (g[field]) should appear; no array diagnostics
+      expect(diags).toHaveLength(2);
+    });
+  });
+
+  describe('error tier — string literal type matching prefixed property', () => {
+    it('emits error for access with literal type matching renamed symbol', () => {
+      const diags = diagnosticsForFile('dynamic-access.ts');
+      const errors = diags.filter(d => d.level === 'error');
+      expect(errors).toHaveLength(1);
+      expect(errors[0].message).toContain('forward');
+      expect(errors[0].message).toContain('reverse');
+    });
+  });
+
+  describe('warn tier — unresolvable dynamic access', () => {
+    it('emits warn for broad string key access', () => {
+      const diags = diagnosticsForFile('dynamic-access.ts');
+      const warns = diags.filter(d => d.level === 'warn');
+      expect(warns).toHaveLength(1);
+    });
+  });
+
+  describe('existing test-project files', () => {
+    it('does NOT emit diagnostics for files with no dynamic access', () => {
+      const engineDiags = diagnosticsForFile('engine.ts');
+      expect(engineDiags).toHaveLength(0);
+    });
+  });
+});

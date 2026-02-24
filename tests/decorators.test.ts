@@ -52,6 +52,7 @@ describe('decorator handling', () => {
       dryRun: false,
       verbose: false,
       skipValidation: false,
+      force: false,
     });
 
     expect(result.validationErrors).toBeUndefined();

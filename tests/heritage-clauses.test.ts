@@ -96,6 +96,7 @@ describe('heritage clause resolution', () => {
         dryRun: false,
         verbose: false,
         skipValidation: false,
+        force: false,
       });
 
       expect(result.validationErrors).toBeUndefined();

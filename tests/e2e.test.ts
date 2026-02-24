@@ -21,6 +21,7 @@ describe('end-to-end', () => {
       dryRun: false,
       verbose: false,
       skipValidation: false,
+      force: false,
     });
   });
 

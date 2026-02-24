@@ -17,6 +17,7 @@ describe('prefixInternals', () => {
       dryRun: true,
       verbose: false,
       skipValidation: true,
+      force: false,
     });
 
     const prefixNames = result.willPrefix.map(d => d.qualifiedName);
@@ -42,6 +43,7 @@ describe('prefixInternals', () => {
       dryRun: false,
       verbose: false,
       skipValidation: false,
+      force: false,
     });
 
     expect(fs.existsSync(path.join(outDir, 'src', 'engine.ts'))).toBe(true);
@@ -91,6 +93,7 @@ describe('prefixInternals', () => {
       dryRun: false,
       verbose: false,
       skipValidation: true,
+      force: false,
     });
 
     // Original source outside projectDir should not be rewritten in-place.

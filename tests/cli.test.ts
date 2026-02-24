@@ -16,6 +16,7 @@ describe('parseArgs', () => {
     expect(config.dryRun).toBe(false);
     expect(config.verbose).toBe(false);
     expect(config.skipValidation).toBe(false);
+    expect(config.force).toBe(false);
   });
 
   it('parses short flags', () => {
@@ -53,6 +54,16 @@ describe('parseArgs', () => {
     expect(config.dryRun).toBe(true);
     expect(config.verbose).toBe(true);
     expect(config.skipValidation).toBe(true);
+  });
+
+  it('parses --force flag', () => {
+    const config = parseArgs([
+      '-p', 'tsconfig.json',
+      '-e', 'src/index.ts',
+      '-o', 'dist',
+      '--force',
+    ]);
+    expect(config.force).toBe(true);
   });
 
   it('throws on missing required args', () => {

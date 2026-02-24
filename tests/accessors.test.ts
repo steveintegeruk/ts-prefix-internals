@@ -78,6 +78,7 @@ describe('getter/setter and constructor parameter type discovery', () => {
         dryRun: false,
         verbose: false,
         skipValidation: false,
+        force: false,
       });
 
       expect(result.validationErrors).toBeUndefined();
