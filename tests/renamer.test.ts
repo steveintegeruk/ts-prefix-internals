@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import path from 'node:path';
-import { createProgramFromConfig, createLanguageService } from '../src/program.js';
+import { createProgramFromConfig } from '../src/program.js';
 import { discoverPublicApiSurface } from '../src/api-surface.js';
 import { classifySymbols } from '../src/classifier.js';
 import { computeRenames } from '../src/renamer.js';
@@ -14,8 +14,7 @@ describe('renamer', () => {
     const checker = program.getTypeChecker();
     const publicSymbols = discoverPublicApiSurface(program, checker, [TEST_ENTRY]);
     const classification = classifySymbols(program, checker, publicSymbols, [TEST_ENTRY], '_');
-    const ls = createLanguageService(program);
-    return computeRenames(ls, program, classification.symbolsToRename, publicSymbols);
+    return computeRenames(program, classification.symbolsToRename, publicSymbols);
   }
 
   it('produces output files', () => {

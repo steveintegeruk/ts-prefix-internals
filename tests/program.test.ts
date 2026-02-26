@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import path from 'node:path';
-import { createProgramFromConfig, createLanguageService } from '../src/program.js';
+import { createProgramFromConfig } from '../src/program.js';
 
 const TEST_PROJECT = path.resolve(import.meta.dirname, '../test-project/tsconfig.json');
 
@@ -24,9 +24,4 @@ describe('program', () => {
     expect(fileNames).toContain('utils.ts');
   });
 
-  it('creates a language service', () => {
-    const program = createProgramFromConfig(TEST_PROJECT);
-    const ls = createLanguageService(program);
-    expect(ls).toBeDefined();
-  });
 });

@@ -2,7 +2,7 @@ import ts from 'typescript';
 import path from 'node:path';
 import fs from 'node:fs';
 import { PrefixConfig, PrefixResult, Diagnostic, RenameDecision } from './config.js';
-import { createProgramFromConfig, createLanguageService } from './program.js';
+import { createProgramFromConfig } from './program.js';
 import { discoverPublicApiSurface } from './api-surface.js';
 import { classifySymbols } from './classifier.js';
 import { computeRenames } from './renamer.js';
@@ -14,17 +14,32 @@ export interface FullResult extends PrefixResult {
 }
 
 export async function prefixInternals(config: PrefixConfig): Promise<FullResult> {
-  const { projectPath, entryPoints, outDir, prefix, dryRun, skipValidation } = config;
+  const { projectPath, entryPoints, outDir, prefix, dryRun, skipValidation, verbose } = config;
+  const time = verbose ? (label: string, fn: () => void) => {
+    const t0 = performance.now();
+    fn();
+    console.log(`  [${label}] ${(performance.now() - t0).toFixed(0)}ms`);
+  } : (_label: string, fn: () => void) => fn();
 
   // 1. Create TypeScript program
-  const program = createProgramFromConfig(projectPath);
-  const checker = program.getTypeChecker();
+  let program!: ts.Program;
+  let checker!: ts.TypeChecker;
+  time('create program', () => {
+    program = createProgramFromConfig(projectPath);
+    checker = program.getTypeChecker();
+  });
 
   // 2. Discover public API surface
-  const publicApiSymbols = discoverPublicApiSurface(program, checker, entryPoints);
+  let publicApiSymbols!: Set<ts.Symbol>;
+  time('discover public API', () => {
+    publicApiSymbols = discoverPublicApiSurface(program, checker, entryPoints);
+  });
 
   // 3. Classify symbols
-  const classification = classifySymbols(program, checker, publicApiSymbols, entryPoints, prefix);
+  let classification!: ReturnType<typeof classifySymbols>;
+  time('classify symbols', () => {
+    classification = classifySymbols(program, checker, publicApiSymbols, entryPoints, prefix);
+  });
 
   if (dryRun) {
     return {
@@ -36,8 +51,10 @@ export async function prefixInternals(config: PrefixConfig): Promise<FullResult>
   }
 
   // 4. Compute renames
-  const ls = createLanguageService(program);
-  const renameResult = computeRenames(ls, program, classification.symbolsToRename, publicApiSymbols);
+  let renameResult!: ReturnType<typeof computeRenames>;
+  time('compute renames', () => {
+    renameResult = computeRenames(program, classification.symbolsToRename, publicApiSymbols);
+  });
   const diagnostics: Diagnostic[] = [
     ...classification.diagnostics,
     ...renameResult.errors.map(msg => ({
@@ -68,10 +85,12 @@ export async function prefixInternals(config: PrefixConfig): Promise<FullResult>
   // 6. Validate output compiles
   let validationErrors: string[] | undefined;
   if (!skipValidation) {
-    validationErrors = validateOutput(tsconfigOutPath);
-    if (validationErrors.length === 0) {
-      validationErrors = undefined;
-    }
+    time('validate output', () => {
+      validationErrors = validateOutput(tsconfigOutPath);
+      if (validationErrors!.length === 0) {
+        validationErrors = undefined;
+      }
+    });
   }
 
   return {

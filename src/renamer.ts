@@ -13,13 +13,13 @@ export interface RenameResult {
 }
 
 export function computeRenames(
-  languageService: ts.LanguageService,
   program: ts.Program,
   symbolsToRename: Map<ts.Symbol, string>,
   publicApiSymbols?: Set<ts.Symbol>
 ): RenameResult {
   const allEdits: PendingEdit[] = [];
   const errors: string[] = [];
+  const checker = program.getTypeChecker();
 
   // Collect original source texts
   const originalSources = new Map<string, string>();
@@ -27,71 +27,47 @@ export function computeRenames(
     originalSources.set(sf.fileName, sf.getFullText());
   }
 
-  // Gather all rename edits
-  for (const [symbol, newName] of symbolsToRename) {
-    const decls = symbol.getDeclarations();
-    if (!decls || decls.length === 0) continue;
-
-    let targetFile: string | undefined;
-    let targetPos: number | undefined;
-
-    for (const decl of decls) {
-      const sf = decl.getSourceFile();
-      if (sf.isDeclarationFile || sf.fileName.includes('node_modules')) continue;
-
-      let nameNode: ts.Node | undefined;
-      if ('name' in decl && (decl as any).name) {
-        nameNode = (decl as any).name;
-      }
-
-      if (nameNode) {
-        targetFile = sf.fileName;
-        targetPos = nameNode.getStart();
-        break;
-      }
+  // Alias-aware rename lookup (full resolution — for general identifiers)
+  function getNewName(symbol: ts.Symbol): string | undefined {
+    const direct = symbolsToRename.get(symbol);
+    if (direct !== undefined) return direct;
+    if (symbol.flags & ts.SymbolFlags.Alias) {
+      try { return symbolsToRename.get(checker.getAliasedSymbol(symbol)); }
+      catch { return undefined; }
     }
-
-    if (targetFile === undefined || targetPos === undefined) continue;
-
-    const locations = languageService.findRenameLocations(
-      targetFile, targetPos, false, false, true
-    );
-
-    if (!locations) {
-      errors.push(`Could not find rename locations for ${symbol.getName()} at ${targetFile}:${targetPos}`);
-      continue;
-    }
-
-    for (const loc of locations) {
-      // TypeScript's Language Service provides prefixText/suffixText when
-      // renaming a shorthand property requires expansion.  For example,
-      // renaming the property `model` to `__model` in `return { model }`
-      // yields suffixText ": model" so the output becomes `{ __model: model }`.
-      // Similarly, `const { model } = ...` may yield prefixText "model: ".
-      allEdits.push({
-        fileName: loc.fileName,
-        start: loc.textSpan.start,
-        length: loc.textSpan.length,
-        newText: (loc.prefixText ?? '') + newName + (loc.suffixText ?? ''),
-      });
-    }
+    return undefined;
   }
 
-  // ---------------------------------------------------------------------------
-  // Second pass: catch property accesses through anonymous type casts.
-  //
-  // findRenameLocations is symbol-based: if code uses an `as` cast with an
-  // inline type literal (e.g. `(x as { value: T }).value`), TS creates a
-  // fresh symbol for the anonymous type's `value` property.  The rename of
-  // `ParseSuccess.value` → `__value` never reaches that access.
-  //
-  // Fix: walk the AST for property accesses whose name matches a renamed
-  // property but whose position wasn't covered by findRenameLocations.
-  // If the resolved property is declared in a project source file (not
-  // lib.d.ts / node_modules), it's a missed rename — add edits for the
-  // access AND for every declaration of that anonymous property symbol.
-  // ---------------------------------------------------------------------------
-  const checker = program.getTypeChecker();
+  // Chain-aware rename lookup for import/export specifiers.
+  // Walks the alias chain one level at a time and STOPS if it encounters
+  // an ExportSpecifier with a `propertyName` (i.e., an `as` clause).
+  // This prevents renaming `import { ChatPane }` when the barrel has
+  // `export { default as ChatPane }` — the `ChatPane` name was explicitly
+  // chosen and shouldn't change even though the underlying value is renamed.
+  function getNewNameForImportOrExport(symbol: ts.Symbol): string | undefined {
+    const direct = symbolsToRename.get(symbol);
+    if (direct !== undefined) return direct;
+
+    let current: ts.Symbol | undefined = symbol;
+    while (current && current.flags & ts.SymbolFlags.Alias) {
+      const decl = current.declarations?.[0];
+      // Stop at export specifiers with `as` — the name was explicitly chosen
+      if (decl && ts.isExportSpecifier(decl) && decl.propertyName) {
+        return undefined;
+      }
+      try {
+        current = checker.getImmediateAliasedSymbol(current);
+      } catch {
+        return undefined;
+      }
+      if (current) {
+        const newName = symbolsToRename.get(current);
+        if (newName !== undefined) return newName;
+      }
+    }
+
+    return undefined;
+  }
 
   function isPublicApiSymbol(symbol: ts.Symbol): boolean {
     if (!publicApiSymbols) return false;
@@ -119,7 +95,9 @@ export function computeRenames(
       ts.isSetAccessorDeclaration(d) ||
       ts.isPropertyAssignment(d) ||
       ts.isShorthandPropertyAssignment(d) ||
-      ts.isEnumMember(d)
+      ts.isEnumMember(d) ||
+      ts.isMethodDeclaration(d) ||
+      ts.isMethodSignature(d)
     );
     if (isProperty) {
       renamedPropNames.set(symbol.getName(), newName);
@@ -129,9 +107,6 @@ export function computeRenames(
 
   // Build set of positions already covered
   const editedPositions = new Set<string>();
-  for (const edit of allEdits) {
-    editedPositions.add(`${edit.fileName}:${edit.start}`);
-  }
 
   // Helper: rename all declarations of a property symbol that haven't been
   // edited yet (e.g. inline anonymous type literals)
@@ -142,7 +117,7 @@ export function computeRenames(
     for (const d of propDecls) {
       const declSf = d.getSourceFile();
       if (declSf.isDeclarationFile || declSf.fileName.includes('node_modules')) continue;
-      const declName = (ts.isPropertySignature(d) || ts.isPropertyDeclaration(d))
+      const declName = (ts.isPropertySignature(d) || ts.isPropertyDeclaration(d) || ts.isMethodSignature(d) || ts.isMethodDeclaration(d))
         ? d.name
         : undefined;
       if (declName && ts.isIdentifier(declName)) {
@@ -162,10 +137,6 @@ export function computeRenames(
   }
 
   // Helper: find a property on a type, searching union members if needed.
-  // `type.getProperty()` on a union only returns a property if it exists
-  // on ALL members.  For discriminated unions (e.g. Selection = { type: 'none' }
-  // | { type: 'node'; ranges: ... }), variant-specific properties like `ranges`
-  // are missed.  This helper checks each union member individually.
   function getPropertyFromType(type: ts.Type, propName: string): ts.Symbol | undefined {
     const prop = type.getProperty(propName);
     if (prop) return prop;
@@ -185,22 +156,6 @@ export function computeRenames(
       const dsf = d.getSourceFile();
       return !dsf.isDeclarationFile && !dsf.fileName.includes('node_modules');
     }) ?? false;
-  }
-
-  function hasEditedDeclaration(prop: ts.Symbol): boolean {
-    const propDecls = prop.getDeclarations();
-    if (!propDecls) return false;
-    for (const d of propDecls) {
-      const declName = (ts.isPropertySignature(d) || ts.isPropertyDeclaration(d))
-        ? d.name
-        : undefined;
-      if (declName && ts.isIdentifier(declName)) {
-        if (editedPositions.has(`${d.getSourceFile().fileName}:${declName.getStart()}`)) {
-          return true;
-        }
-      }
-    }
-    return false;
   }
 
   // Resolve the source object type for object binding patterns like:
@@ -247,158 +202,382 @@ export function computeRenames(
     return undefined;
   }
 
-  // Walk AST
+  // ---------------------------------------------------------------------------
+  // Single-pass AST walk — replaces the per-symbol findRenameLocations loop
+  // and both fallback AST walks (anonymous types and destructuring).
+  // ---------------------------------------------------------------------------
   for (const sf of program.getSourceFiles()) {
     if (sf.isDeclarationFile || sf.fileName.includes('node_modules')) continue;
 
     const visit = (node: ts.Node): void => {
-      // Case 1: property access expressions — obj.prop
+
+      // --- Case A: Property access expressions — obj.prop ---
       if (ts.isPropertyAccessExpression(node)) {
-        const propName = node.name.text;
-        const newName = renamedPropNames.get(propName);
-        if (newName !== undefined) {
-          const pos = node.name.getStart();
-          if (!editedPositions.has(`${sf.fileName}:${pos}`)) {
-            const type = checker.getTypeAtLocation(node.expression);
-            const prop = getPropertyFromType(type, propName);
-            if (prop && isProjectProperty(prop) && !isPublicApiSymbol(prop)) {
-              allEdits.push({
-                fileName: sf.fileName,
-                start: pos,
-                length: propName.length,
-                newText: newName,
-              });
-              editedPositions.add(`${sf.fileName}:${pos}`);
-              renamePropertyDeclarations(prop, propName, newName);
+        const nameNode = node.name;
+        const propName = nameNode.text;
+        const pos = nameNode.getStart();
+        const key = `${sf.fileName}:${pos}`;
+
+        if (!editedPositions.has(key)) {
+          // Try direct symbol lookup first
+          const sym = checker.getSymbolAtLocation(nameNode);
+          const directNewName = sym ? getNewName(sym) : undefined;
+
+          if (directNewName !== undefined) {
+            allEdits.push({ fileName: sf.fileName, start: pos, length: propName.length, newText: directNewName });
+            editedPositions.add(key);
+          } else {
+            // Fallback: name-based lookup via type resolution (catches anonymous types)
+            const newName = renamedPropNames.get(propName);
+            if (newName !== undefined) {
+              const type = checker.getTypeAtLocation(node.expression);
+              const prop = getPropertyFromType(type, propName);
+              if (prop && isProjectProperty(prop) && !isPublicApiSymbol(prop)) {
+                allEdits.push({ fileName: sf.fileName, start: pos, length: propName.length, newText: newName });
+                editedPositions.add(key);
+                renamePropertyDeclarations(prop, propName, newName);
+              }
             }
           }
         }
+
+        // Visit the expression subtree but not the name (already handled)
+        visit(node.expression);
+        return;
       }
 
-      // Case 2: property assignment in object literals — { key: value }
+      // --- Case B: Property assignment — { key: value } ---
       if (ts.isPropertyAssignment(node) && ts.isIdentifier(node.name)) {
         const propName = node.name.text;
-        const newName = renamedPropNames.get(propName);
-        if (newName !== undefined) {
-          const pos = node.name.getStart();
-          if (!editedPositions.has(`${sf.fileName}:${pos}`)) {
-            const objLit = node.parent;
-            if (ts.isObjectLiteralExpression(objLit)) {
-              const sourceType = getObjectLiteralSourceType(objLit);
-              if (sourceType) {
-                const prop = getPropertyFromType(sourceType, propName);
-                if (prop && isProjectProperty(prop) && !isPublicApiSymbol(prop)) {
-                  allEdits.push({
-                    fileName: sf.fileName,
-                    start: pos,
-                    length: propName.length,
-                    newText: newName,
-                  });
-                  editedPositions.add(`${sf.fileName}:${pos}`);
-                  renamePropertyDeclarations(prop, propName, newName);
+        const pos = node.name.getStart();
+        const key = `${sf.fileName}:${pos}`;
+
+        if (!editedPositions.has(key)) {
+          // Try direct symbol lookup first
+          const sym = checker.getSymbolAtLocation(node.name);
+          const directNewName = sym ? getNewName(sym) : undefined;
+
+          if (directNewName !== undefined) {
+            allEdits.push({ fileName: sf.fileName, start: pos, length: propName.length, newText: directNewName });
+            editedPositions.add(key);
+          } else {
+            // Fallback: contextual type resolution
+            const newName = renamedPropNames.get(propName);
+            if (newName !== undefined) {
+              const objLit = node.parent;
+              if (ts.isObjectLiteralExpression(objLit)) {
+                const sourceType = getObjectLiteralSourceType(objLit);
+                if (sourceType) {
+                  const prop = getPropertyFromType(sourceType, propName);
+                  if (prop && isProjectProperty(prop) && !isPublicApiSymbol(prop)) {
+                    allEdits.push({ fileName: sf.fileName, start: pos, length: propName.length, newText: newName });
+                    editedPositions.add(key);
+                    renamePropertyDeclarations(prop, propName, newName);
+                  }
                 }
               }
             }
           }
         }
+
+        // Visit the initializer but skip the name
+        if (node.initializer) visit(node.initializer);
+        return;
       }
 
-      // Case 3: shorthand property in object literals — { key }
-      // Must expand to { __key: key } when the property is renamed
+      // --- Case C: Shorthand property — { key } ---
       if (ts.isShorthandPropertyAssignment(node)) {
         const propName = node.name.text;
+        const pos = node.name.getStart();
+        const key = `${sf.fileName}:${pos}`;
+
+        if (!editedPositions.has(key)) {
+          // Check property side (via contextual type)
+          let propNewName: string | undefined;
+          const objLit = node.parent;
+          if (ts.isObjectLiteralExpression(objLit)) {
+            const sourceType = getObjectLiteralSourceType(objLit);
+            if (sourceType) {
+              const prop = getPropertyFromType(sourceType, propName);
+              if (prop) {
+                const pName = getNewName(prop);
+                if (pName !== undefined) {
+                  propNewName = pName;
+                } else if (renamedPropNames.has(propName) && isProjectProperty(prop) && !isPublicApiSymbol(prop)) {
+                  propNewName = renamedPropNames.get(propName);
+                }
+              }
+            }
+          }
+
+          // Check value side (the local variable reference)
+          let valueNewName: string | undefined;
+          const valueSym = checker.getShorthandAssignmentValueSymbol(node);
+          if (valueSym) {
+            valueNewName = getNewName(valueSym);
+          }
+
+          if (propNewName !== undefined || valueNewName !== undefined) {
+            const finalProp = propNewName ?? propName;
+            const finalValue = valueNewName ?? propName;
+
+            if (finalProp === finalValue) {
+              // Both sides have the same name — keep shorthand form
+              allEdits.push({ fileName: sf.fileName, start: pos, length: propName.length, newText: finalProp });
+            } else {
+              // Expand shorthand
+              allEdits.push({ fileName: sf.fileName, start: pos, length: propName.length, newText: `${finalProp}: ${finalValue}` });
+            }
+            editedPositions.add(key);
+
+            // Rename anonymous property declarations if using fallback
+            if (propNewName !== undefined && ts.isObjectLiteralExpression(objLit)) {
+              const sourceType = getObjectLiteralSourceType(objLit);
+              if (sourceType) {
+                const prop = getPropertyFromType(sourceType, propName);
+                if (prop) renamePropertyDeclarations(prop, propName, propNewName);
+              }
+            }
+          }
+        }
+
+        // No children to visit for shorthand
+        return;
+      }
+
+      // --- Case D: Binding element in object destructuring ---
+      if (ts.isBindingElement(node) && ts.isObjectBindingPattern(node.parent)) {
+        const hasExplicitPropName = node.propertyName && ts.isIdentifier(node.propertyName);
+        const propName = hasExplicitPropName
+          ? (node.propertyName as ts.Identifier).text
+          : ts.isIdentifier(node.name)
+            ? node.name.text
+            : undefined;
+
+        if (propName !== undefined) {
+          // Check if the property needs renaming
+          let propNewName: string | undefined;
+          const sourceType = getBindingSourceType(node);
+          if (sourceType) {
+            const prop = getPropertyFromType(sourceType, propName);
+            if (prop) {
+              propNewName = getNewName(prop);
+              if (!propNewName && renamedPropNames.has(propName) && isProjectProperty(prop) && !isPublicApiSymbol(prop)) {
+                if (renamedPropertySymbols.has(prop)) {
+                  propNewName = renamedPropNames.get(propName);
+                }
+              }
+            }
+          }
+
+          if (propNewName !== undefined) {
+            if (hasExplicitPropName) {
+              // Has explicit propertyName — rename just that
+              const propNameNode = node.propertyName as ts.Identifier;
+              const pos = propNameNode.getStart();
+              const key = `${sf.fileName}:${pos}`;
+              if (!editedPositions.has(key)) {
+                allEdits.push({ fileName: sf.fileName, start: pos, length: propName.length, newText: propNewName });
+                editedPositions.add(key);
+              }
+            } else if (ts.isIdentifier(node.name)) {
+              // No explicit propertyName — check if binding name is also renamed
+              const bindSym = checker.getSymbolAtLocation(node.name);
+              const bindNewName = bindSym ? getNewName(bindSym) : undefined;
+
+              const finalProp = propNewName;
+              const finalBind = bindNewName ?? node.name.text;
+
+              const pos = node.name.getStart();
+              const key = `${sf.fileName}:${pos}`;
+              if (!editedPositions.has(key)) {
+                if (finalProp === finalBind) {
+                  // Both sides same — keep shorthand
+                  allEdits.push({ fileName: sf.fileName, start: pos, length: propName.length, newText: finalProp });
+                } else {
+                  // Expand: { x } → { _x: x }
+                  allEdits.push({ fileName: sf.fileName, start: pos, length: propName.length, newText: `${finalProp}: ${finalBind}` });
+                }
+                editedPositions.add(key);
+              }
+            }
+
+            if (sourceType) {
+              const prop = getPropertyFromType(sourceType, propName);
+              if (prop) renamePropertyDeclarations(prop, propName, propNewName);
+            }
+          } else if (!hasExplicitPropName && ts.isIdentifier(node.name)) {
+            // Property NOT renamed, but check if local binding IS renamed
+            const bindSym = checker.getSymbolAtLocation(node.name);
+            const bindNewName = bindSym ? getNewName(bindSym) : undefined;
+            if (bindNewName !== undefined) {
+              const pos = node.name.getStart();
+              const key = `${sf.fileName}:${pos}`;
+              if (!editedPositions.has(key)) {
+                // Expand: { x } → { x: _x }
+                allEdits.push({ fileName: sf.fileName, start: pos, length: node.name.text.length, newText: `${propName}: ${bindNewName}` });
+                editedPositions.add(key);
+              }
+            }
+          }
+        }
+
+        // Also handle the binding name itself when there IS an explicit propertyName
+        if (hasExplicitPropName && ts.isIdentifier(node.name)) {
+          const bindSym = checker.getSymbolAtLocation(node.name);
+          if (bindSym) {
+            const bindNewName = getNewName(bindSym);
+            if (bindNewName !== undefined) {
+              const pos = node.name.getStart();
+              const key = `${sf.fileName}:${pos}`;
+              if (!editedPositions.has(key)) {
+                allEdits.push({ fileName: sf.fileName, start: pos, length: node.name.text.length, newText: bindNewName });
+                editedPositions.add(key);
+              }
+            }
+          }
+        }
+
+        // Visit initializer if present
+        if (node.initializer) visit(node.initializer);
+        // Visit nested binding patterns
+        if (!ts.isIdentifier(node.name)) visit(node.name);
+        return;
+      }
+
+      // --- Case E: Element access with string literal — obj["prop"] ---
+      if (ts.isElementAccessExpression(node) && node.argumentExpression && ts.isStringLiteral(node.argumentExpression)) {
+        const propName = node.argumentExpression.text;
         const newName = renamedPropNames.get(propName);
         if (newName !== undefined) {
-          const pos = node.name.getStart();
-          if (!editedPositions.has(`${sf.fileName}:${pos}`)) {
-            const objLit = node.parent;
-            if (ts.isObjectLiteralExpression(objLit)) {
+          const type = checker.getTypeAtLocation(node.expression);
+          const prop = getPropertyFromType(type, propName);
+          if (prop && isProjectProperty(prop) && !isPublicApiSymbol(prop)) {
+            const pos = node.argumentExpression.getStart() + 1; // skip opening quote
+            const key = `${sf.fileName}:${pos}`;
+            if (!editedPositions.has(key)) {
+              allEdits.push({ fileName: sf.fileName, start: pos, length: propName.length, newText: newName });
+              editedPositions.add(key);
+            }
+          }
+        }
+        // Fall through to visit children
+      }
+
+      // --- Case E2: Indexed access type — Type['prop'] ---
+      if (ts.isIndexedAccessTypeNode(node) && ts.isLiteralTypeNode(node.indexType) && ts.isStringLiteral(node.indexType.literal)) {
+        const propName = node.indexType.literal.text;
+        const newName = renamedPropNames.get(propName);
+        if (newName !== undefined) {
+          const objectType = checker.getTypeFromTypeNode(node.objectType);
+          const prop = getPropertyFromType(objectType, propName);
+          if (prop && isProjectProperty(prop) && !isPublicApiSymbol(prop)) {
+            const pos = node.indexType.literal.getStart() + 1; // skip opening quote
+            const key = `${sf.fileName}:${pos}`;
+            if (!editedPositions.has(key)) {
+              allEdits.push({ fileName: sf.fileName, start: pos, length: propName.length, newText: newName });
+              editedPositions.add(key);
+            }
+          }
+        }
+        // Fall through to visit children
+      }
+
+      // --- Case E3: Method declaration in object literal — { method() {} } ---
+      if (ts.isMethodDeclaration(node) && ts.isIdentifier(node.name) && ts.isObjectLiteralExpression(node.parent)) {
+        const propName = node.name.text;
+        const pos = node.name.getStart();
+        const key = `${sf.fileName}:${pos}`;
+
+        if (!editedPositions.has(key)) {
+          // Try direct symbol lookup first
+          const sym = checker.getSymbolAtLocation(node.name);
+          const directNewName = sym ? getNewName(sym) : undefined;
+
+          if (directNewName !== undefined) {
+            allEdits.push({ fileName: sf.fileName, start: pos, length: propName.length, newText: directNewName });
+            editedPositions.add(key);
+          } else {
+            // Fallback: contextual type resolution
+            const newName = renamedPropNames.get(propName);
+            if (newName !== undefined) {
+              const objLit = node.parent;
               const sourceType = getObjectLiteralSourceType(objLit);
               if (sourceType) {
                 const prop = getPropertyFromType(sourceType, propName);
                 if (prop && isProjectProperty(prop) && !isPublicApiSymbol(prop)) {
-                  // Expand shorthand: { model } → { __model: model }
-                  allEdits.push({
-                    fileName: sf.fileName,
-                    start: pos,
-                    length: propName.length,
-                    newText: `${newName}: ${propName}`,
-                  });
-                  editedPositions.add(`${sf.fileName}:${pos}`);
+                  allEdits.push({ fileName: sf.fileName, start: pos, length: propName.length, newText: newName });
+                  editedPositions.add(key);
                   renamePropertyDeclarations(prop, propName, newName);
                 }
               }
             }
           }
         }
+
+        // Visit children (parameters, type, body) but skip the name
+        node.parameters.forEach(p => visit(p));
+        if (node.type) visit(node.type);
+        if (node.body) ts.forEachChild(node.body, visit);
+        return;
+      }
+
+      // --- Case F: Generic identifiers ---
+      if (ts.isIdentifier(node)) {
+        const parent = node.parent;
+
+        // Skip identifiers already handled by parent-node cases above
+        if (ts.isPropertyAccessExpression(parent) && node === parent.name) return;
+        if (ts.isPropertyAssignment(parent) && node === parent.name) return;
+        if (ts.isShorthandPropertyAssignment(parent) && node === parent.name) return;
+        if (ts.isBindingElement(parent) && (node === parent.propertyName || node === parent.name)) return;
+
+        // Skip `default` keyword used as propertyName in import/export specifiers
+        // — it refers to the module's default export and can't be renamed
+        if (
+          (ts.isImportSpecifier(parent) || ts.isExportSpecifier(parent)) &&
+          node === parent.propertyName &&
+          node.text === 'default'
+        ) return;
+
+        const sym = checker.getSymbolAtLocation(node);
+        if (!sym) return;
+
+        const pos = node.getStart();
+        const key = `${sf.fileName}:${pos}`;
+        if (editedPositions.has(key)) return;
+
+        let newName: string | undefined;
+
+        // Aliased import/export specifier local names: only direct lookup
+        // to avoid incorrectly renaming `B` in `import { A as B }` or `export { A as B }`
+        if (
+          ((ts.isImportSpecifier(parent) || ts.isExportSpecifier(parent)) &&
+            node === parent.name && parent.propertyName)
+        ) {
+          newName = symbolsToRename.get(sym);
+        }
+        // Import/export specifier identifiers: chain-aware resolution
+        // that stops at `as` boundaries to prevent renaming through re-exports
+        else if (ts.isImportSpecifier(parent) || ts.isExportSpecifier(parent)) {
+          newName = getNewNameForImportOrExport(sym);
+        }
+        // Regular identifiers: full alias resolution
+        else {
+          newName = getNewName(sym);
+        }
+
+        if (newName !== undefined) {
+          allEdits.push({ fileName: sf.fileName, start: pos, length: node.text.length, newText: newName });
+          editedPositions.add(key);
+        }
+        return;
       }
 
       ts.forEachChild(node, visit);
     };
 
     ts.forEachChild(sf, visit);
-  }
-
-  // Case 4: object binding destructuring — const { key } = obj
-  // Run after other fallback cases so declaration edits are already known.
-  for (const sf of program.getSourceFiles()) {
-    if (sf.isDeclarationFile || sf.fileName.includes('node_modules')) continue;
-
-    const visitBindings = (node: ts.Node): void => {
-      if (ts.isBindingElement(node) && ts.isObjectBindingPattern(node.parent)) {
-        const propName = node.propertyName && ts.isIdentifier(node.propertyName)
-          ? node.propertyName.text
-          : ts.isIdentifier(node.name)
-            ? node.name.text
-            : undefined;
-
-        if (propName !== undefined) {
-          const newName = renamedPropNames.get(propName);
-          if (newName !== undefined) {
-            const sourceType = getBindingSourceType(node);
-            if (sourceType) {
-              const prop = getPropertyFromType(sourceType, propName);
-              if (
-                prop &&
-                isProjectProperty(prop) &&
-                !isPublicApiSymbol(prop) &&
-                (renamedPropertySymbols.has(prop) || hasEditedDeclaration(prop))
-              ) {
-                if (node.propertyName && ts.isIdentifier(node.propertyName)) {
-                  const pos = node.propertyName.getStart();
-                  if (!editedPositions.has(`${sf.fileName}:${pos}`)) {
-                    allEdits.push({
-                      fileName: sf.fileName,
-                      start: pos,
-                      length: propName.length,
-                      newText: newName,
-                    });
-                    editedPositions.add(`${sf.fileName}:${pos}`);
-                  }
-                } else if (ts.isIdentifier(node.name)) {
-                  const pos = node.name.getStart();
-                  if (!editedPositions.has(`${sf.fileName}:${pos}`)) {
-                    allEdits.push({
-                      fileName: sf.fileName,
-                      start: pos,
-                      length: propName.length,
-                      newText: `${newName}: ${propName}`,
-                    });
-                    editedPositions.add(`${sf.fileName}:${pos}`);
-                  }
-                }
-
-                renamePropertyDeclarations(prop, propName, newName);
-              }
-            }
-          }
-        }
-      }
-
-      ts.forEachChild(node, visitBindings);
-    };
-
-    ts.forEachChild(sf, visitBindings);
   }
 
   // Group edits by file
