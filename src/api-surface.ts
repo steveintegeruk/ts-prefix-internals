@@ -40,7 +40,7 @@ export function discoverPublicApiSurface(
   function resolveToDeclarationSymbol(symbol: ts.Symbol): ts.Symbol {
     const decls = symbol.getDeclarations();
     if (decls && decls.length > 0) {
-      const name = decls[0].name ?? (decls[0] as ts.NamedDeclaration).name;
+      const name = (decls[0] as ts.NamedDeclaration).name;
       if (name) {
         const declSym = checker.getSymbolAtLocation(name);
         if (declSym) return declSym;
