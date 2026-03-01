@@ -453,6 +453,29 @@ export function computeRenames(
         return;
       }
 
+      // --- Case E0: `in` operator — 'prop' in obj ---
+      if (
+        ts.isBinaryExpression(node) &&
+        node.operatorToken.kind === ts.SyntaxKind.InKeyword &&
+        ts.isStringLiteral(node.left)
+      ) {
+        const propName = node.left.text;
+        const newName = renamedPropNames.get(propName);
+        if (newName !== undefined) {
+          const type = checker.getTypeAtLocation(node.right);
+          const prop = getPropertyFromType(type, propName);
+          if (prop && isProjectProperty(prop) && !isPublicApiSymbol(prop)) {
+            const pos = node.left.getStart() + 1; // skip opening quote
+            const key = `${sf.fileName}:${pos}`;
+            if (!editedPositions.has(key)) {
+              allEdits.push({ fileName: sf.fileName, start: pos, length: propName.length, newText: newName });
+              editedPositions.add(key);
+            }
+          }
+        }
+        // Fall through to visit children
+      }
+
       // --- Case E: Element access with string literal — obj["prop"] ---
       if (ts.isElementAccessExpression(node) && node.argumentExpression && ts.isStringLiteral(node.argumentExpression)) {
         const propName = node.argumentExpression.text;

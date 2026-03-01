@@ -33,6 +33,22 @@ export function discoverPublicApiSurface(
     walkSymbolType(resolved);
   }
 
+  // Resolve a transient/synthetic property symbol to the original declaration symbol.
+  // TypeScript creates transient symbols for properties accessed through inferred types;
+  // these are different objects from the declaration symbols even though they share the
+  // same declaration site.
+  function resolveToDeclarationSymbol(symbol: ts.Symbol): ts.Symbol {
+    const decls = symbol.getDeclarations();
+    if (decls && decls.length > 0) {
+      const name = decls[0].name ?? (decls[0] as ts.NamedDeclaration).name;
+      if (name) {
+        const declSym = checker.getSymbolAtLocation(name);
+        if (declSym) return declSym;
+      }
+    }
+    return symbol;
+  }
+
   function walkMembers(symbol: ts.Symbol): void {
     // Handle class members
     if (symbol.flags & ts.SymbolFlags.Class) {
@@ -177,7 +193,21 @@ export function discoverPublicApiSurface(
     }
 
     if (ts.isVariableDeclaration(node)) {
-      if (node.type) walkTypeNode(node.type);
+      if (node.type) {
+        walkTypeNode(node.type);
+      } else {
+        // No explicit type annotation — inferred type (e.g., IIFE return).
+        // Walk the inferred type's properties so they're marked public.
+        // Type properties may be transient symbols; resolve to declaration symbols.
+        const sym = node.name ? checker.getSymbolAtLocation(node.name) : undefined;
+        if (sym) {
+          const inferredType = checker.getTypeOfSymbolAtLocation(sym, node);
+          for (const prop of inferredType.getProperties()) {
+            const declSym = resolveToDeclarationSymbol(prop);
+            addSymbol(declSym);
+          }
+        }
+      }
     }
 
     if (ts.isTypeAliasDeclaration(node)) {

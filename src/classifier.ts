@@ -167,7 +167,8 @@ export function classifySymbols(
               classifyOne(paramSymbol, qualifiedName, !memberIsPublic, memberIsPublic ? 'public API member' : 'non-public member of public class');
             }
           } else {
-            classifyOne(paramSymbol, qualifiedName, true, 'member of internal class');
+            const memberIsPublic = isPublicSymbol(paramSymbol);
+            classifyOne(paramSymbol, qualifiedName, !memberIsPublic, memberIsPublic ? 'public API member (via type leak)' : 'member of internal class');
           }
         }
         continue;
@@ -190,7 +191,10 @@ export function classifySymbols(
           classifyOne(memberSymbol, qualifiedName, !memberIsPublic, memberIsPublic ? 'public API member' : 'non-public member of public class');
         }
       } else {
-        classifyOne(memberSymbol, qualifiedName, true, 'member of internal class');
+        // Class is internal, but individual members may still be public
+        // if they leak through an exported variable's inferred type
+        const memberIsPublic = isPublicSymbol(memberSymbol);
+        classifyOne(memberSymbol, qualifiedName, !memberIsPublic, memberIsPublic ? 'public API member (via type leak)' : 'member of internal class');
       }
     }
   }
