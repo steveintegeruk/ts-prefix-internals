@@ -1,4 +1,5 @@
 import ts from 'typescript';
+import { hasTerserKeyAnnotation } from './ts-helpers.js';
 
 interface PendingEdit {
   fileName: string;
@@ -214,17 +215,6 @@ export function computeRenames(
   // Single-pass AST walk — replaces the per-symbol findRenameLocations loop
   // and both fallback AST walks (anonymous types and destructuring).
   // ---------------------------------------------------------------------------
-
-  /**
-   * Returns true if the node has a leading `@__KEY__` block-comment annotation
-   * (Terser key annotation). Inspects the raw leading-trivia text because
-   * `ts.getLeadingCommentRanges` only finds comments preceded by a newline.
-   */
-  function hasTerserKeyAnnotation(sf: ts.SourceFile, node: ts.Node): boolean {
-    const text = sf.getFullText();
-    const leadingTrivia = text.slice(node.getFullStart(), node.getStart(sf));
-    return /\/\*\s*@__KEY__\s*\*\//.test(leadingTrivia);
-  }
 
   for (const sf of program.getSourceFiles()) {
     if (sf.isDeclarationFile || sf.fileName.includes('node_modules')) continue;
