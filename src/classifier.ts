@@ -481,7 +481,7 @@ export function classifySymbols(
   }
 
   /**
-   * Returns true if the node has a leading `/*@__KEY__*\/` block-comment annotation
+   * Returns true if the node has a leading `@__KEY__` block-comment annotation
    * (Terser key annotation), indicating that the caller is intentionally using a
    * dynamic key and warnings should be suppressed.
    *
