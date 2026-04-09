@@ -483,21 +483,16 @@ export function computeRenames(
         const propName = node.argumentExpression.text;
         const newName = renamedPropNames.get(propName);
         if (newName !== undefined) {
-          let shouldRename = false;
-
-          if (hasTerserKeyAnnotation(sf, node.argumentExpression)) {
-            // @__KEY__ annotation: the developer declares intent — rename unconditionally
-            // (skip type check; covers any-typed objects and other opaque access patterns)
-            shouldRename = true;
-          } else {
+          const annotated = hasTerserKeyAnnotation(sf, node.argumentExpression);
+          const typeOk = (): boolean => {
             const type = checker.getTypeAtLocation(node.expression);
             const prop = getPropertyFromType(type, propName);
-            if (prop && isProjectProperty(prop) && !isPublicApiSymbol(prop)) {
-              shouldRename = true;
-            }
-          }
+            return !!(prop && isProjectProperty(prop) && !isPublicApiSymbol(prop));
+          };
 
-          if (shouldRename) {
+          // @__KEY__ annotation: rename unconditionally (skip type check, covers any-typed objects).
+          // Otherwise require the property to be found on the object type.
+          if (annotated || typeOk()) {
             const pos = node.argumentExpression.getStart() + 1; // skip opening quote
             const key = `${sf.fileName}:${pos}`;
             if (!editedPositions.has(key)) {
