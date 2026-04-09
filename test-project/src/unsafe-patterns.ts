@@ -93,6 +93,12 @@ function applyMappingConfigAnnotated(
   return { ...config, [/*@__KEY__*/ key]: value };
 }
 
+// --- Pattern 7: @__KEY__-annotated computed property with string literal (should be RENAMED) ---
+// The string literal 'forward' should be prefixed to '_forward' in the rename output.
+function buildWithAnnotatedKeyLiteral(): Record<string, boolean> {
+  return { [/*@__KEY__*/ 'forward']: true };
+}
+
 // Suppress unused warnings
 void blockSuppressedConfig;
 void configureMapping;
@@ -101,3 +107,4 @@ void applyMappingConfig;
 void configureMappingSuppressed;
 void applyMappingConfigSuppressed;
 void applyMappingConfigAnnotated;
+void buildWithAnnotatedKeyLiteral;

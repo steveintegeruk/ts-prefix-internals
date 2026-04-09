@@ -30,9 +30,15 @@ function getPropertyAnnotated(obj: { forward: boolean; reverse: boolean }, key: 
   return (obj as any)[/*@__KEY__*/ key];
 }
 
+// Element access with @__KEY__ on a string literal on any-typed object — should be SILENT and RENAMED
+function accessForwardAnnotatedLiteral(g: LinkMap): unknown {
+  return (g as any)[/*@__KEY__*/ 'forward'];
+}
+
 // Suppress unused warnings
 void first;
 void getProperty;
 void accessGraphField;
 void accessGraphFieldAnnotated;
 void getPropertyAnnotated;
+void accessForwardAnnotatedLiteral;

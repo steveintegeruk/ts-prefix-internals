@@ -214,6 +214,18 @@ export function computeRenames(
   // Single-pass AST walk — replaces the per-symbol findRenameLocations loop
   // and both fallback AST walks (anonymous types and destructuring).
   // ---------------------------------------------------------------------------
+
+  /**
+   * Returns true if the node has a leading `@__KEY__` block-comment annotation
+   * (Terser key annotation). Inspects the raw leading-trivia text because
+   * `ts.getLeadingCommentRanges` only finds comments preceded by a newline.
+   */
+  function hasTerserKeyAnnotation(sf: ts.SourceFile, node: ts.Node): boolean {
+    const text = sf.getFullText();
+    const leadingTrivia = text.slice(node.getFullStart(), node.getStart(sf));
+    return /\/\*\s*@__KEY__\s*\*\//.test(leadingTrivia);
+  }
+
   for (const sf of program.getSourceFiles()) {
     if (sf.isDeclarationFile || sf.fileName.includes('node_modules')) continue;
 
@@ -481,15 +493,43 @@ export function computeRenames(
         const propName = node.argumentExpression.text;
         const newName = renamedPropNames.get(propName);
         if (newName !== undefined) {
-          const type = checker.getTypeAtLocation(node.expression);
-          const prop = getPropertyFromType(type, propName);
-          if (prop && isProjectProperty(prop) && !isPublicApiSymbol(prop)) {
+          let shouldRename = false;
+
+          if (hasTerserKeyAnnotation(sf, node.argumentExpression)) {
+            // @__KEY__ annotation: the developer declares intent — rename unconditionally
+            // (skip type check; covers any-typed objects and other opaque access patterns)
+            shouldRename = true;
+          } else {
+            const type = checker.getTypeAtLocation(node.expression);
+            const prop = getPropertyFromType(type, propName);
+            if (prop && isProjectProperty(prop) && !isPublicApiSymbol(prop)) {
+              shouldRename = true;
+            }
+          }
+
+          if (shouldRename) {
             const pos = node.argumentExpression.getStart() + 1; // skip opening quote
             const key = `${sf.fileName}:${pos}`;
             if (!editedPositions.has(key)) {
               allEdits.push({ fileName: sf.fileName, start: pos, length: propName.length, newText: newName });
               editedPositions.add(key);
             }
+          }
+        }
+        // Fall through to visit children
+      }
+
+      // --- Case E1: Computed property name with @__KEY__-annotated string literal —
+      //              { [/*@__KEY__*/ 'prop']: value } / class { [/*@__KEY__*/ 'prop']() {} }
+      if (ts.isComputedPropertyName(node) && ts.isStringLiteral(node.expression) && hasTerserKeyAnnotation(sf, node.expression)) {
+        const propName = node.expression.text;
+        const newName = renamedPropNames.get(propName);
+        if (newName !== undefined) {
+          const pos = node.expression.getStart() + 1; // skip opening quote
+          const key = `${sf.fileName}:${pos}`;
+          if (!editedPositions.has(key)) {
+            allEdits.push({ fileName: sf.fileName, start: pos, length: propName.length, newText: newName });
+            editedPositions.add(key);
           }
         }
         // Fall through to visit children
