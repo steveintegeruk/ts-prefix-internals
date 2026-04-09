@@ -17,3 +17,22 @@ type GraphKey = 'forward' | 'reverse';
 function accessGraphField(g: LinkMap, field: GraphKey) {
   return (g as any)[field];
 }
+
+// --- @__KEY__ annotation suppression ---
+
+// Element access with @__KEY__: literal type matching renamed — should be SILENT (suppressed)
+function accessGraphFieldAnnotated(g: LinkMap, field: GraphKey) {
+  return (g as any)[/*@__KEY__*/ field];
+}
+
+// Element access with @__KEY__: non-string-literal on a plain object — should be SILENT (suppressed)
+function getPropertyAnnotated(obj: { forward: boolean; reverse: boolean }, key: string): unknown {
+  return (obj as any)[/*@__KEY__*/ key];
+}
+
+// Suppress unused warnings
+void first;
+void getProperty;
+void accessGraphField;
+void accessGraphFieldAnnotated;
+void getPropertyAnnotated;
