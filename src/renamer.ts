@@ -43,6 +43,23 @@ export function computeRenames(
       try { return symbolsToRename.get(checker.getAliasedSymbol(symbol)); }
       catch { return undefined; }
     }
+    // Handle transient/instantiated symbols from generic type instantiations.
+    // Their declarations point to the original property, whose symbol IS tracked.
+    if (symbol.flags & ts.SymbolFlags.Transient) {
+      const decls = symbol.getDeclarations();
+      if (decls?.length) {
+        for (const decl of decls) {
+          const nameNode = (decl as ts.NamedDeclaration).name;
+          if (nameNode && ts.isIdentifier(nameNode)) {
+            const origSym = checker.getSymbolAtLocation(nameNode);
+            if (origSym && origSym !== symbol) {
+              const origName = symbolsToRename.get(origSym);
+              if (origName !== undefined) return origName;
+            }
+          }
+        }
+      }
+    }
     return undefined;
   }
 

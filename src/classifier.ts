@@ -547,6 +547,16 @@ export function classifySymbols(
         // If the property symbol is directly tracked, the renamer handles it
         if (symbolsToRename.has(prop)) continue;
 
+        // Also skip if prop is an instantiated symbol from a generic type whose
+        // original declaration symbol is tracked (generic interface parameters)
+        if (prop.flags & ts.SymbolFlags.Transient) {
+          const propDecls = prop.getDeclarations();
+          const origSym = propDecls?.length
+            ? checker.getSymbolAtLocation((propDecls[0] as ts.NamedDeclaration).name ?? propDecls[0])
+            : undefined;
+          if (origSym && symbolsToRename.has(origSym)) continue;
+        }
+
         // Skip non-project properties (lib, node_modules)
         const propDecls = prop.getDeclarations();
         const isProject = propDecls?.some(d => {
