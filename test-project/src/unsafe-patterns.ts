@@ -84,6 +84,21 @@ function blockSuppressedConfig({
 }
 // ts-prefix-suppress-warnings-end
 
+// --- Pattern 6: @__KEY__-annotated computed property (should NOT produce warnings) ---
+function applyMappingConfigAnnotated(
+  config: MappingConfig,
+  key: keyof MappingConfig,
+  value: boolean,
+): MappingConfig {
+  return { ...config, [/*@__KEY__*/ key]: value };
+}
+
+// --- Pattern 7: @__KEY__-annotated computed property with string literal (should be RENAMED) ---
+// The string literal 'forward' should be prefixed to '_forward' in the rename output.
+function buildWithAnnotatedKeyLiteral(): Record<string, boolean> {
+  return { [/*@__KEY__*/ 'forward']: true };
+}
+
 // Suppress unused warnings
 void blockSuppressedConfig;
 void configureMapping;
@@ -91,3 +106,5 @@ void MappingHelper;
 void applyMappingConfig;
 void configureMappingSuppressed;
 void applyMappingConfigSuppressed;
+void applyMappingConfigAnnotated;
+void buildWithAnnotatedKeyLiteral;

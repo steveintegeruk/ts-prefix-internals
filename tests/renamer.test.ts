@@ -164,6 +164,22 @@ describe('renamer', () => {
     expect(content).toContain('result._total');
   });
 
+  it('renames @__KEY__-annotated string literals in element access and computed property names', () => {
+    const result = getRenames();
+
+    // Element access on any-typed object with @__KEY__ annotation: 'forward' → '_forward'
+    const dynFile = [...result.outputFiles.entries()].find(([k]) => k.endsWith('dynamic-access.ts'));
+    expect(dynFile).toBeDefined();
+    const [, dynContent] = dynFile!;
+    expect(dynContent).toContain("[/*@__KEY__*/ '_forward']");
+
+    // Computed property name with @__KEY__-annotated string literal: 'forward' → '_forward'
+    const unsafeFile = [...result.outputFiles.entries()].find(([k]) => k.endsWith('unsafe-patterns.ts'));
+    expect(unsafeFile).toBeDefined();
+    const [, unsafeContent] = unsafeFile!;
+    expect(unsafeContent).toContain("[/*@__KEY__*/ '_forward']");
+  });
+
   it('keeps public pass-through wrapper parameter keys stable', () => {
     const result = getRenames();
 

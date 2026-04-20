@@ -1,4 +1,5 @@
 import ts from 'typescript';
+import { hasTerserKeyAnnotation } from './ts-helpers.js';
 
 interface PendingEdit {
   fileName: string;
@@ -231,6 +232,7 @@ export function computeRenames(
   // Single-pass AST walk — replaces the per-symbol findRenameLocations loop
   // and both fallback AST walks (anonymous types and destructuring).
   // ---------------------------------------------------------------------------
+
   for (const sf of program.getSourceFiles()) {
     if (sf.isDeclarationFile || sf.fileName.includes('node_modules')) continue;
 
@@ -498,15 +500,38 @@ export function computeRenames(
         const propName = node.argumentExpression.text;
         const newName = renamedPropNames.get(propName);
         if (newName !== undefined) {
-          const type = checker.getTypeAtLocation(node.expression);
-          const prop = getPropertyFromType(type, propName);
-          if (prop && isProjectProperty(prop) && !isPublicApiSymbol(prop)) {
+          const annotated = hasTerserKeyAnnotation(sf, node.argumentExpression);
+          const typeOk = (): boolean => {
+            const type = checker.getTypeAtLocation(node.expression);
+            const prop = getPropertyFromType(type, propName);
+            return !!(prop && isProjectProperty(prop) && !isPublicApiSymbol(prop));
+          };
+
+          // @__KEY__ annotation: rename unconditionally (skip type check, covers any-typed objects).
+          // Otherwise require the property to be found on the object type.
+          if (annotated || typeOk()) {
             const pos = node.argumentExpression.getStart() + 1; // skip opening quote
             const key = `${sf.fileName}:${pos}`;
             if (!editedPositions.has(key)) {
               allEdits.push({ fileName: sf.fileName, start: pos, length: propName.length, newText: newName });
               editedPositions.add(key);
             }
+          }
+        }
+        // Fall through to visit children
+      }
+
+      // --- Case E1: Computed property name with @__KEY__-annotated string literal —
+      //              { [/*@__KEY__*/ 'prop']: value } / class { [/*@__KEY__*/ 'prop']() {} }
+      if (ts.isComputedPropertyName(node) && ts.isStringLiteral(node.expression) && hasTerserKeyAnnotation(sf, node.expression)) {
+        const propName = node.expression.text;
+        const newName = renamedPropNames.get(propName);
+        if (newName !== undefined) {
+          const pos = node.expression.getStart() + 1; // skip opening quote
+          const key = `${sf.fileName}:${pos}`;
+          if (!editedPositions.has(key)) {
+            allEdits.push({ fileName: sf.fileName, start: pos, length: propName.length, newText: newName });
+            editedPositions.add(key);
           }
         }
         // Fall through to visit children

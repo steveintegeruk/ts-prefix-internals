@@ -1,5 +1,6 @@
 import ts from 'typescript';
 import type { RenameDecision, Diagnostic } from './config.js';
+import { hasTerserKeyAnnotation } from './ts-helpers.js';
 
 export interface ClassificationResult {
   willPrefix: RenameDecision[];
@@ -436,6 +437,12 @@ export function classifySymbols(
           return;
         }
 
+        // Suppress if the argument expression is annotated with /*@__KEY__*/
+        if (hasTerserKeyAnnotation(sf, arg)) {
+          ts.forEachChild(node, visit);
+          return;
+        }
+
         const { line } = sf.getLineAndCharacterOfPosition(node.getStart());
         if (suppressed.has(line + 1)) {
           ts.forEachChild(node, visit);
@@ -603,6 +610,9 @@ export function classifySymbols(
       const hits = literals.filter(n => renamedNames.has(n));
 
       if (hits.length === 0) return;
+
+      // Suppress if the expression inside the computed property is annotated with /*@__KEY__*/
+      if (hasTerserKeyAnnotation(sf, node.expression)) return;
 
       const { line } = sf.getLineAndCharacterOfPosition(node.getStart());
       if (suppressed.has(line + 1)) return;
