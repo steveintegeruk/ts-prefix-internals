@@ -1,11 +1,12 @@
 import ts from 'typescript';
-import type { RenameDecision, Diagnostic } from './config.js';
+import type { RenameDecision, Diagnostic, RootLevelFunction } from './config.js';
 
 export interface ClassificationResult {
   willPrefix: RenameDecision[];
   willNotPrefix: RenameDecision[];
   diagnostics: Diagnostic[];
   symbolsToRename: Map<ts.Symbol, string>; // symbol -> new name
+  rootLevelFunctions: RootLevelFunction[];
 }
 
 export function classifySymbols(
@@ -667,5 +668,79 @@ export function classifySymbols(
     detectUnsafePatterns(sf, suppressed);
   }
 
-  return { willPrefix, willNotPrefix, diagnostics, symbolsToRename };
+  // Collect all root-level named functions from project source files.
+  // This runs after symbolsToRename is built so we can check each function's rename status.
+  const rootLevelFunctions: RootLevelFunction[] = [];
+
+  for (const sf of program.getSourceFiles()) {
+    if (!isProjectSourceFile(sf)) continue;
+
+    for (const stmt of sf.statements) {
+      // function foo() {} / export function foo() {}
+      if (ts.isFunctionDeclaration(stmt) && stmt.name) {
+        const symbol = checker.getSymbolAtLocation(stmt.name);
+        if (symbol && !isFromExternalOrDts(symbol)) {
+          const { line } = sf.getLineAndCharacterOfPosition(stmt.name.getStart());
+          const name = symbol.getName();
+          const resolved = resolveSymbol(symbol);
+          const newNameFromMap = symbolsToRename.get(symbol) ?? symbolsToRename.get(resolved);
+          const willRename = newNameFromMap !== undefined;
+          const entry: RootLevelFunction = {
+            name,
+            qualifiedName: `${sf.fileName}:${line + 1} ${name}`,
+            kind: 'FunctionDeclaration',
+            fileName: sf.fileName,
+            line: line + 1,
+            willRename,
+          };
+          if (willRename) {
+            entry.newName = newNameFromMap;
+          } else {
+            const isPublic = isPublicSymbol(symbol) || isPublicSymbol(resolved);
+            entry.reason = isPublic ? 'public API' : 'not selected for prefixing';
+          }
+          rootLevelFunctions.push(entry);
+        }
+        continue;
+      }
+
+      // const foo = () => {} / const foo = function() {}
+      if (ts.isVariableStatement(stmt)) {
+        for (const decl of stmt.declarationList.declarations) {
+          if (!ts.isIdentifier(decl.name)) continue;
+          const init = decl.initializer;
+          if (!init) continue;
+          const isArrow = ts.isArrowFunction(init);
+          const isFnExpr = ts.isFunctionExpression(init);
+          if (!isArrow && !isFnExpr) continue;
+
+          const symbol = checker.getSymbolAtLocation(decl.name);
+          if (!symbol || isFromExternalOrDts(symbol)) continue;
+
+          const { line } = sf.getLineAndCharacterOfPosition(decl.name.getStart());
+          const name = symbol.getName();
+          const resolved = resolveSymbol(symbol);
+          const newNameFromMap = symbolsToRename.get(symbol) ?? symbolsToRename.get(resolved);
+          const willRename = newNameFromMap !== undefined;
+          const entry: RootLevelFunction = {
+            name,
+            qualifiedName: `${sf.fileName}:${line + 1} ${name}`,
+            kind: isArrow ? 'VariableArrowFunction' : 'VariableFunctionExpression',
+            fileName: sf.fileName,
+            line: line + 1,
+            willRename,
+          };
+          if (willRename) {
+            entry.newName = newNameFromMap;
+          } else {
+            const isPublic = isPublicSymbol(symbol) || isPublicSymbol(resolved);
+            entry.reason = isPublic ? 'public API' : 'not selected for prefixing';
+          }
+          rootLevelFunctions.push(entry);
+        }
+      }
+    }
+  }
+
+  return { willPrefix, willNotPrefix, diagnostics, symbolsToRename, rootLevelFunctions };
 }
