@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-import { parseArgs, RenameDecision, Diagnostic } from './config.js';
+import { parseArgs, RenameDecision, Diagnostic, RootLevelFunction } from './config.js';
 import { prefixInternals } from './index.js';
 
-function formatDryRun(willPrefix: RenameDecision[], willNotPrefix: RenameDecision[], diagnostics: Diagnostic[]): string {
+function formatDryRun(willPrefix: RenameDecision[], willNotPrefix: RenameDecision[], diagnostics: Diagnostic[], rootLevelFunctions: RootLevelFunction[]): string {
   const lines: string[] = [];
 
   lines.push('WILL PREFIX (internal):');
@@ -16,6 +16,20 @@ function formatDryRun(willPrefix: RenameDecision[], willNotPrefix: RenameDecisio
   for (const d of willNotPrefix) {
     const pad = Math.max(1, 40 - d.qualifiedName.length);
     lines.push(`  ${d.qualifiedName}${' '.repeat(pad)}${d.kind.padEnd(12)} ${d.fileName}:${d.line}    (${d.reason})`);
+  }
+
+  if (rootLevelFunctions.length > 0) {
+    lines.push('');
+    lines.push('ROOT-LEVEL FUNCTIONS:');
+    for (const f of rootLevelFunctions) {
+      const pad = Math.max(1, 30 - f.name.length);
+      const kindPad = f.kind.padEnd(28);
+      if (f.willRename) {
+        lines.push(`  ${f.name}${' '.repeat(pad)}${kindPad} ${f.fileName}:${f.line}    \u2192 ${f.newName}  [will be renamed]`);
+      } else {
+        lines.push(`  ${f.name}${' '.repeat(pad)}${kindPad} ${f.fileName}:${f.line}    (${f.reason})  [will NOT be renamed]`);
+      }
+    }
   }
 
   const errors = diagnostics.filter(d => d.level === 'error');
@@ -56,7 +70,7 @@ async function main() {
       : result.diagnostics;
 
     if (config.dryRun) {
-      console.log(formatDryRun(result.willPrefix, result.willNotPrefix, effectiveDiags));
+      console.log(formatDryRun(result.willPrefix, result.willNotPrefix, effectiveDiags, result.rootLevelFunctions));
       const errors = effectiveDiags.filter(d => d.level === 'error');
       if (errors.length > 0 && !config.force) {
         process.exit(1);

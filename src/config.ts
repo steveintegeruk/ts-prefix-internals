@@ -122,9 +122,21 @@ export interface Diagnostic {
   line: number;
 }
 
+export interface RootLevelFunction {
+  name: string;
+  qualifiedName: string;
+  kind: 'FunctionDeclaration' | 'VariableFunctionExpression' | 'VariableArrowFunction';
+  fileName: string;
+  line: number;
+  willRename: boolean;
+  newName?: string;
+  reason?: string;
+}
+
 export interface PrefixResult {
   willPrefix: RenameDecision[];
   willNotPrefix: RenameDecision[];
   diagnostics: Diagnostic[];
   outputFiles: Map<string, string>;
+  rootLevelFunctions: RootLevelFunction[];
 }

@@ -95,4 +95,68 @@ describe('classifier', () => {
     expect(noPrefixNames).toContain('CoordKind.Beta');
     expect(noPrefixNames).toContain('CoordKind.Gamma');
   });
+
+  it('rootLevelFunctions includes FunctionDeclaration entries', () => {
+    const result = getClassification();
+    const fns = result.rootLevelFunctions;
+    const names = fns.map(f => f.name);
+    // makeKey is an exported function declaration in utils.ts (not in public API → will be renamed)
+    expect(names).toContain('makeKey');
+    const makeKeyEntry = fns.find(f => f.name === 'makeKey')!;
+    expect(makeKeyEntry.kind).toBe('FunctionDeclaration');
+    expect(makeKeyEntry.willRename).toBe(true);
+    expect(makeKeyEntry.newName).toBe('_makeKey');
+  });
+
+  it('rootLevelFunctions marks public API function as not renamed', () => {
+    const result = getClassification();
+    const fns = result.rootLevelFunctions;
+    // buildSpec is exported from wrapper.ts and re-exported from index.ts (public API)
+    const buildSpecEntry = fns.find(f => f.name === 'buildSpec');
+    expect(buildSpecEntry).toBeDefined();
+    expect(buildSpecEntry!.willRename).toBe(false);
+    expect(buildSpecEntry!.reason).toBe('public API');
+    expect(buildSpecEntry!.kind).toBe('FunctionDeclaration');
+  });
+
+  it('rootLevelFunctions includes VariableArrowFunction entries', () => {
+    const result = getClassification();
+    const fns = result.rootLevelFunctions;
+    const arrowEntry = fns.find(f => f.name === 'internalArrow');
+    expect(arrowEntry).toBeDefined();
+    expect(arrowEntry!.kind).toBe('VariableArrowFunction');
+    expect(arrowEntry!.willRename).toBe(true);
+    expect(arrowEntry!.newName).toBe('_internalArrow');
+  });
+
+  it('rootLevelFunctions includes VariableFunctionExpression entries', () => {
+    const result = getClassification();
+    const fns = result.rootLevelFunctions;
+    const fnExprEntry = fns.find(f => f.name === 'internalFnExpr');
+    expect(fnExprEntry).toBeDefined();
+    expect(fnExprEntry!.kind).toBe('VariableFunctionExpression');
+    expect(fnExprEntry!.willRename).toBe(true);
+    expect(fnExprEntry!.newName).toBe('_internalFnExpr');
+  });
+
+  it('rootLevelFunctions includes exported arrow function not in public API (marked renamed)', () => {
+    const result = getClassification();
+    const fns = result.rootLevelFunctions;
+    const entry = fns.find(f => f.name === 'internalExportedArrow');
+    expect(entry).toBeDefined();
+    expect(entry!.kind).toBe('VariableArrowFunction');
+    expect(entry!.willRename).toBe(true);
+    expect(entry!.newName).toBe('_internalExportedArrow');
+  });
+
+  it('rootLevelFunctions provides fileName and line for each entry', () => {
+    const result = getClassification();
+    const fns = result.rootLevelFunctions;
+    for (const f of fns) {
+      expect(typeof f.fileName).toBe('string');
+      expect(f.fileName.length).toBeGreaterThan(0);
+      expect(typeof f.line).toBe('number');
+      expect(f.line).toBeGreaterThan(0);
+    }
+  });
 });

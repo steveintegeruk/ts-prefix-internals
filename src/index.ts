@@ -7,7 +7,7 @@ import { discoverPublicApiSurface } from './api-surface.js';
 import { classifySymbols } from './classifier.js';
 import { computeRenames } from './renamer.js';
 
-export { type PrefixConfig, type PrefixResult, type Diagnostic, type RenameDecision, parseArgs } from './config.js';
+export { type PrefixConfig, type PrefixResult, type Diagnostic, type RenameDecision, type RootLevelFunction, parseArgs } from './config.js';
 
 export interface FullResult extends PrefixResult {
   validationErrors?: string[];
@@ -58,6 +58,7 @@ export async function prefixInternals(config: PrefixConfig): Promise<FullResult>
       willNotPrefix: classification.willNotPrefix,
       diagnostics: classification.diagnostics,
       outputFiles: new Map(),
+      rootLevelFunctions: classification.rootLevelFunctions,
     };
   }
 
@@ -110,6 +111,7 @@ export async function prefixInternals(config: PrefixConfig): Promise<FullResult>
     diagnostics,
     outputFiles: renameResult.outputFiles,
     validationErrors,
+    rootLevelFunctions: classification.rootLevelFunctions,
   };
 }
 
